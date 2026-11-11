@@ -53,7 +53,7 @@ Open http://localhost:8090, press **Read all**, open an invoice and approve it.
 | Variable | Where it comes from |
 |---|---|
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | developer.paypal.com > Apps & Credentials > **Sandbox** > Create App, linked to a **US** sandbox business account (keep **Payouts** ticked). Sandbox business accounts in some countries, India among them, cannot send payouts: PayPal answers `PAYOUT_NOT_AVAILABLE` |
-| `DEMO_PAYEE_EMAIL` (optional) | developer.paypal.com > Sandbox accounts: the **personal** account's email. The first supplier is paid there, so its payout completes. Other suppliers use `example.com` addresses, which PayPal reports as `UNCLAIMED` (the money waits for the recipient to open an account) |
+| `DEMO_PAYEE_EMAIL` (optional) | developer.paypal.com > Sandbox accounts: the email of any sandbox account you have, personal or business (an account that cannot send payouts can still receive them). The first supplier is paid there, so its payout completes (`SUCCESS`). Other suppliers use `example.com` addresses, which PayPal reports as `UNCLAIMED` (the money waits for the recipient to open an account) |
 | `GROQ_API_KEY` | console.groq.com. The default reader is `openai/gpt-oss-120b` on Groq, about one second per invoice |
 | `ANTHROPIC_API_KEY` (alternative) | console.anthropic.com, for Claude, which reads the PDF itself rather than its extracted text. With neither key, the app uses a **replay** model that returns recorded readings of the five demo invoices, and says so in the header. The checks, approvals and PayPal payouts still run for real |
 | `COUNTERSIGN_MODEL` (optional) | `groq:openai/gpt-oss-120b` (default with a Groq key), `claude-sonnet-5-5`, `claude-opus-5-5`, or `replay` |
