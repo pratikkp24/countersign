@@ -469,9 +469,11 @@ def usd(n):
     return f"USD {float(n):,.2f}"
 
 
-def email_approvers(cid):
-    """Ask each person who can approve a waiting role. -> the log entries."""
+def email_approvers(cid, again=False):
+    """Ask each person who can approve a waiting role, once per person and role (again=True re-sends). -> entries."""
     case = load_cases()[cid]
+    asked = {(e.get("to"), e.get("role")) for e in case.get("emails", []) if e.get("kind") == "approval_request"
+             and not e.get("error")}
     d, so = case.get("decided") or {}, case.get("signoff") or {}
     waiting = so.get("waiting_for", [])
     signed = {s["signer"].lower() for s in so.get("signed", [])}
@@ -479,6 +481,8 @@ def email_approvers(cid):
     for a in cfg.load()["approvers"]:
         roles = [r for r in a["roles"] if r in waiting]
         if not roles or a["name"].lower() in signed or not a.get("email"):
+            continue
+        if not again and (a["email"], roles[0]) in asked:
             continue
         role = ROLES[roles[0]]
         rows = [("Supplier", d.get("vendor")), ("Invoice", d.get("invoice")), ("PO", d.get("po")),
@@ -496,7 +500,7 @@ def email_approvers(cid):
                     ("Reject", approval_link(cid, case, a["name"], roles[0], "reject"), "danger"),
                     ("Open in Countersign", f"{APP_URL}/#case={cid}", "ghost")],
             kind="approval_request", amount=usd(d.get("amount", 0)),
-            eyebrow=f"{d.get('invoice')} · {d.get('vendor')}")))
+            eyebrow=f"{d.get('invoice')} · {d.get('vendor')}") | {"role": roles[0]}))
     return out
 
 
@@ -576,7 +580,7 @@ def email(cid: str, body: EmailIn):
     if body.kind == "approval_request":
         if case.get("status") != "PENDING":
             raise HTTPException(409, "this invoice is not waiting for approval")
-        sent = email_approvers(cid)
+        sent = email_approvers(cid, again=True)
         if not sent:
             raise HTTPException(409, "no approver with an email address is waiting on this invoice")
     elif body.kind == "remittance":
