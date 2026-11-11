@@ -1,4 +1,4 @@
-"""PayPal REST, sandbox only: OAuth client credentials and the Payouts API.
+"""PayPal REST, sandbox only: OAuth client credentials, the Payouts API, and Transaction Search for reconciliation.
 
 Credentials come from .env.local (PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET). They are never logged or traced.
 """
@@ -65,6 +65,23 @@ class PayPal:
 
     def get_payout(self, payout_batch_id):
         return self._req("GET", f"/v1/payments/payouts/{payout_batch_id}")
+
+    # -- Transaction Search (reporting) -------------------------------------------------------------------------------
+
+    def transactions(self, start, end):
+        """The business's own PayPal transaction history between two datetimes (at most 31 days apart), every page.
+        -> (transaction_details, last_refreshed_datetime). Needs "Transaction search" ticked on the PayPal app."""
+        fmt = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S-0000")
+        out, page, refreshed = [], 1, None
+        while True:
+            body = self._req("GET", "/v1/reporting/transactions",
+                             params={"start_date": fmt(start), "end_date": fmt(end), "fields": "transaction_info,payer_info",
+                                     "page_size": 500, "page": page})
+            out += body.get("transaction_details", [])
+            refreshed = body.get("last_refreshed_datetime", refreshed)
+            if page >= int(body.get("total_pages") or 1) or page >= 10:
+                return out, refreshed
+            page += 1
 
 
 def _json(r):

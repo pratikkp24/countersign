@@ -15,6 +15,7 @@
   <nav class="tabs" role="tablist">
     <button role="tab" data-view="inbox" class="on">Inbox</button>
     <button role="tab" data-view="ledger">Ledger</button>
+    <button role="tab" data-view="reconcile">Reconcile</button>
     <button role="tab" data-view="records">Vendors &amp; POs</button>
     <button role="tab" data-view="connectors">Connectors</button>
     <button role="tab" data-view="settings">Settings</button>
@@ -53,6 +54,20 @@
       </div>
       <div id="verify-out"></div>
       <table class="tbl" id="ledger-tbl"></table>
+    </div>
+  </section>
+
+  <section id="view-reconcile" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Reconcile with PayPal</div>
+          <h1>Did what people approved actually leave PayPal?</h1>
+        </div>
+        <button class="btn ghost" id="reconcile-again">Check PayPal again</button>
+      </div>
+      <p class="muted" style="margin:-6px 0 18px">Countersign reads the studio's own PayPal transaction history (PayPal Transaction Search, last 30 days) and matches it to every payout it made. Money that left the account without an approval here is listed too.</p>
+      <div id="reconcile"></div>
     </div>
   </section>
 
@@ -98,6 +113,6 @@
 <div class="toast" id="toast" role="status"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

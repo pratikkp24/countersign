@@ -392,6 +392,7 @@ function show(v) {
   document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x.dataset.view === v));
   document.querySelectorAll(".view").forEach((s) => s.classList.toggle("on", s.id === `view-${v}`));
   if (v === "ledger") loadLedger();
+  if (v === "reconcile") loadReconcile();
   if (v === "records") renderRecords();
   if (v === "connectors") loadConnectors();
   if (v === "settings") loadSettings();
@@ -427,6 +428,46 @@ async function loadLedger() {
   $("#ledger-tbl").innerHTML = `<thead><tr><th class="r">#</th><th>When</th><th>Entry</th><th>sha256</th><th>Previous</th></tr></thead><tbody>${rows}</tbody>`;
 }
 $("#verify").addEventListener("click", loadLedger);
+
+// -- reconcile ----------------------------------------------------------------------------------------------------------
+async function loadReconcile() {
+  const el = $("#reconcile");
+  el.innerHTML = `<div class="busy">Reading the studio's PayPal transactions…</div>`;
+  let R;
+  try {
+    R = await api("/api/reconcile");
+  } catch (e) {
+    R = { ok: false, error: String(e) };
+  }
+  if (!R.ok) {
+    el.innerHTML = `<div class="banner"><span class="cross" style="width:26px;height:26px">!</span><div><div class="big">PayPal did not answer</div><div class="muted small">${esc(R.error)}</div></div></div>`;
+    return;
+  }
+  const n = (s) => R.ours.filter((r) => r.state === s).length;
+  const refreshed = R.refreshed ? new Date(R.refreshed).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "unknown";
+  const STATE = {
+    MATCHED: `<span class="chip pos">Matched</span>`,
+    AMOUNT_DIFFERS: `<span class="chip neg">Amount differs</span>`,
+    WAITING: `<span class="chip warn">Not in PayPal's report yet</span>`,
+    MISSING: `<span class="chip neg">Missing from PayPal</span>`,
+  };
+  const clean = !n("AMOUNT_DIFFERS") && !n("MISSING");
+  const ours = R.ours.length
+    ? R.ours.map((r) => `<tr><td>${STATE[r.state]}</td><td>${esc(r.invoice)}<div class="muted small">${esc(r.vendor)}</div></td><td class="r num">${usd(r.amount)}</td><td class="r num">${r.paypal_amount != null ? usd(r.paypal_amount) : "–"}</td><td class="r num">${r.paypal_fee != null ? usd(r.paypal_fee) : r.fee ? usd(r.fee) : "–"}</td><td class="mono hash">${esc(r.transaction_id || "–")}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="muted">No payouts in this workspace yet. Approve Lena Ortiz Design to make one.</td></tr>`;
+  const outside = R.outside.length
+    ? R.outside.map((r) => `<tr><td>${when(Date.parse(r.time) / 1000)}</td><td class="r num">${usd(r.amount)}</td><td class="r num">${r.fee ? usd(r.fee) : "–"}</td><td>${esc(r.counterparty || "")}<div class="muted small">${esc(r.note || "")}</div></td><td class="mono hash">${esc(r.transaction_id)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted">None. Every payment out of the account was approved in Countersign.</td></tr>`;
+  el.innerHTML = `<div class="banner"><span class="${clean ? "tick" : "cross"}" style="width:26px;height:26px;font-size:14px">${clean ? "✓" : "!"}</span>
+      <div><div class="big">${n("MATCHED")} of ${R.ours.length} payouts matched in PayPal</div>
+      <div class="muted small">${n("WAITING") ? `${n("WAITING")} not in PayPal's report yet (it can trail payouts by up to a few hours) · ` : ""}${R.outside.length} ${R.outside.length === 1 ? "payment" : "payments"} out without a Countersign approval · ${R.paypal_count} PayPal transactions read, last ${R.window_days} days · PayPal report refreshed ${esc(refreshed)}</div></div></div>
+    <div class="section"><h3>Countersign payouts, checked against PayPal</h3>
+      <table class="tbl"><thead><tr><th>PayPal says</th><th>Invoice</th><th class="r">Approved</th><th class="r">In PayPal</th><th class="r">Fee</th><th>Transaction</th></tr></thead><tbody>${ours}</tbody></table></div>
+    <div class="section"><h3>Money out of PayPal without a Countersign approval</h3>
+      <p class="muted small" style="margin-bottom:8px">In this demo these are payouts from earlier demo runs, whose records were reset. In a real business, this list is what an AP team investigates.</p>
+      <table class="tbl"><thead><tr><th>When</th><th class="r">Amount</th><th class="r">Fee</th><th>To</th><th>Transaction</th></tr></thead><tbody>${outside}</tbody></table></div>`;
+}
+$("#reconcile-again").addEventListener("click", loadReconcile);
 
 // -- records ----------------------------------------------------------------------------------------------------------
 function renderRecords() {

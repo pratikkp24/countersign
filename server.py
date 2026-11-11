@@ -425,6 +425,67 @@ async def upload(file: UploadFile):
     return {"ok": True}
 
 
+@app.get("/api/reconcile")
+def reconcile():
+    """Match every payout Countersign made against the business's own PayPal transaction history (Transaction
+    Search), and list money that left the PayPal account without a Countersign approval."""
+    import datetime as dt
+    if not PayPal.configured():
+        return {"ok": False, "error": "PayPal sandbox credentials are not set"}
+    end = dt.datetime.now(dt.timezone.utc)
+    start = end - dt.timedelta(days=30)
+    try:
+        txs, refreshed = PAYPAL.transactions(start, end)
+    except PayPalError as e:
+        if e.status == 403:
+            return {"ok": False, "error": "PayPal refused Transaction Search for this app. Tick Transaction search under "
+                                          "the app's Features on developer.paypal.com."}
+        return {"ok": False, "error": str(e)}
+    refreshed_at = dt.datetime.fromisoformat(refreshed.replace("Z", "+00:00")).timestamp() if refreshed else None
+    by_id = {}
+    for t in txs:
+        i = t.get("transaction_info", {})
+        by_id[i.get("transaction_id")] = t
+    ours, used = [], set()
+    for c in load_cases().values():
+        p = c.get("payout")
+        if not p:
+            continue
+        tid = p.get("transaction_id")
+        t = by_id.get(tid) if tid else None
+        row = {"invoice": (c.get("decided") or {}).get("invoice"), "vendor": (c.get("decided") or {}).get("vendor"),
+               "amount": float(p.get("amount") or 0), "fee": p.get("fee"), "transaction_id": tid,
+               "batch": p.get("payout_batch_id"), "created": p.get("created")}
+        if t:
+            used.add(tid)
+            i = t["transaction_info"]
+            paid = abs(float(i.get("transaction_amount", {}).get("value", 0)))
+            row.update(paypal_amount=paid, paypal_fee=abs(float(i.get("fee_amount", {}).get("value", 0) or 0)),
+                       paypal_status=i.get("transaction_status"), paypal_time=i.get("transaction_initiation_date"),
+                       state="MATCHED" if abs(paid - row["amount"]) < 0.005 else "AMOUNT_DIFFERS")
+        elif not tid or (refreshed_at and (p.get("created") or 0) > refreshed_at):
+            row["state"] = "WAITING"           # PayPal's report has not caught up with this payout yet
+        else:
+            row["state"] = "MISSING"
+        ours.append(row)
+    outside = []
+    for t in txs:
+        i = t.get("transaction_info", {})
+        amt = float(i.get("transaction_amount", {}).get("value", 0) or 0)
+        if amt >= 0 or i.get("transaction_id") in used:
+            continue
+        payer = t.get("payer_info") or {}
+        outside.append({"transaction_id": i.get("transaction_id"), "amount": abs(amt),
+                        "fee": abs(float(i.get("fee_amount", {}).get("value", 0) or 0)),
+                        "currency": i.get("transaction_amount", {}).get("currency_code"),
+                        "event": i.get("transaction_event_code"), "status": i.get("transaction_status"),
+                        "time": i.get("transaction_initiation_date"), "note": i.get("transaction_note") or i.get("transaction_subject"),
+                        "counterparty": payer.get("email_address")})
+    outside.sort(key=lambda r: r["time"] or "", reverse=True)
+    return {"ok": True, "refreshed": refreshed, "window_days": 30, "paypal_count": len(txs), "ours": ours,
+            "outside": outside}
+
+
 @app.get("/api/ledger")
 def ledger_view():
     entries = ledger._entries(RECORDS)
