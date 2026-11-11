@@ -62,28 +62,68 @@ def ready():
     return True, ""
 
 
-def _page(title, intro, rows, body="", button=None, meant_for=None):
+STATUS = {  # kind -> (pill text, pill colour, pill background)
+    "approval_request": ("Awaiting your approval", "#8A5A12", "#FBF1DF"),
+    "supplier_note": ("On hold", "#9A2A1F", "#FBEAE7"),
+    "remittance": ("Paid", "#1F6A4B", "#E6F2EC"),
+    "test": ("Connected", "#3F63B8", "#EEF2FB"),
+}
+
+
+def _page(title, intro, rows, body="", button=None, meant_for=None, kind="email", amount=None, eyebrow=""):
+    """A table-based HTML email (Gmail, Outlook, Apple Mail), inline styles only, light background, 600 px."""
     esc = html.escape
+    font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
+    pill_text, pill_fg, pill_bg = STATUS.get(kind, ("", "#555", "#f1f1f1"))
+    pill = (f'<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:{pill_bg};color:{pill_fg};'
+            f'font:600 11px {font};letter-spacing:1.2px;text-transform:uppercase">{esc(pill_text)}</span>') if pill_text else ""
+    amount_html = (f'<div style="font:300 34px/1.1 {font};letter-spacing:-1px;color:#111;margin:14px 0 2px">'
+                   f'{esc(amount)}</div>') if amount else ""
+    eyebrow_html = (f'<div style="font:500 11px {font};letter-spacing:2px;text-transform:uppercase;color:#8a8a8a;'
+                    f'margin-bottom:8px">{esc(eyebrow)}</div>') if eyebrow else ""
+    banner = (f'<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">'
+              f'<tr><td style="background:#F1EFEA;border-radius:10px;padding:10px 14px;font:12px/1.5 {font};color:#555">'
+              f'Safe delivery: this email was meant for <b style="color:#111">{esc(meant_for)}</b>.</td></tr></table></td></tr>'
+              ) if meant_for else ""
     rows_html = "".join(
-        f'<tr><td style="padding:6px 0;color:#6b6b6b;width:150px;vertical-align:top">{esc(k)}</td>'
-        f'<td style="padding:6px 0;color:#111">{esc(str(v))}</td></tr>' for k, v in rows)
-    banner = (f'<div style="background:#F3F1EC;border-radius:8px;padding:10px 14px;font-size:12px;color:#555;'
-              f'margin-bottom:18px">Safe delivery: this email was meant for <b>{esc(meant_for)}</b>.</div>') if meant_for else ""
-    btn = (f'<p style="margin:22px 0 4px"><a href="{esc(button[1])}" style="background:#111;color:#fff;'
-           f'text-decoration:none;padding:10px 18px;border-radius:999px;font-size:14px">{esc(button[0])}</a></p>') if button else ""
-    body_html = "".join(f'<p style="margin:0 0 12px;line-height:1.6">{esc(p)}</p>' for p in body.split("\n\n") if p.strip())
-    return f"""<!doctype html><html><body style="margin:0;background:#FAF9F7;font-family:Helvetica,Arial,sans-serif">
-<div style="max-width:560px;margin:0 auto;padding:32px 24px">
-<div style="font-size:15px;color:#111;margin-bottom:22px">&#9673; Countersign</div>{banner}
-<div style="background:#fff;border:1px solid #e7e5e0;border-radius:12px;padding:24px">
-<h1 style="font-weight:300;font-size:24px;letter-spacing:-0.4px;margin:0 0 8px;color:#111">{esc(title)}</h1>
-<p style="margin:0 0 16px;color:#444;line-height:1.6">{esc(intro)}</p>{body_html}
-<table style="width:100%;border-collapse:collapse;font-size:14px">{rows_html}</table>{btn}</div>
-<p style="font-size:12px;color:#888;margin-top:18px">Sent by Countersign for Harbor &amp; Pine Studio. Payments run on the PayPal sandbox.</p>
-</div></body></html>"""
+        f'<tr><td style="padding:10px 0;border-top:1px solid #EEECE7;color:#8a8a8a;font:13px/1.4 {font};width:38%;'
+        f'vertical-align:top">{esc(k)}</td><td style="padding:10px 0;border-top:1px solid #EEECE7;color:#111;'
+        f'font:14px/1.4 {font};vertical-align:top;word-break:break-word">{esc(str(v))}</td></tr>' for k, v in rows if v)
+    body_html = "".join(f'<p style="margin:0 0 14px;font:15px/1.65 {font};color:#222">{esc(p).replace(chr(10), "<br>")}</p>'
+                        for p in body.split("\n\n") if p.strip())
+    btn = (f'<table role="presentation" cellspacing="0" cellpadding="0" style="margin:24px 0 4px"><tr>'
+           f'<td style="background:#111;border-radius:999px"><a href="{esc(button[1])}" style="display:inline-block;'
+           f'padding:12px 22px;font:500 14px {font};color:#ffffff;text-decoration:none">{esc(button[0])} &rarr;</a></td>'
+           f'</tr></table>') if button else ""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light only"><title>{esc(title)}</title></head>
+<body style="margin:0;padding:0;background:#F6F5F2;-webkit-text-size-adjust:100%">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0">{esc(intro)}</div>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#F6F5F2">
+<tr><td align="center" style="padding:32px 16px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px">
+<tr><td style="padding:0 4px 20px;font:15px {font};color:#111">
+  <span style="display:inline-block;width:14px;height:14px;border:1.5px solid #111;border-radius:50%;vertical-align:-2px;
+  text-align:center;line-height:14px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:#6487D7;vertical-align:middle"></span></span>&nbsp; Countersign</td></tr>
+{banner}
+<tr><td style="background:#ffffff;border:1px solid #E8E6E1;border-radius:16px;padding:32px 32px 28px">
+  {eyebrow_html}{pill}
+  <h1 style="margin:16px 0 8px;font:300 26px/1.2 {font};letter-spacing:-0.5px;color:#111">{esc(title)}</h1>
+  <p style="margin:0 0 6px;font:15px/1.6 {font};color:#555">{esc(intro)}</p>
+  {amount_html}
+  <div style="height:18px"></div>{body_html}
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">{rows_html}</table>
+  {btn}
+</td></tr>
+<tr><td style="padding:18px 6px 0;font:12px/1.6 {font};color:#9a9a9a">
+  Sent by Countersign for Harbor &amp; Pine Studio. The model reads, a policy decides, people approve.<br>
+  Payments run on the PayPal sandbox; no real money moves.</td></tr>
+</table></td></tr></table></body></html>"""
 
 
-def send(to, subject, title, intro, rows, body="", button=None, kind="email"):
+def send(to, subject, title, intro, rows, body="", button=None, kind="email", amount=None, eyebrow=""):
     """-> a log entry: {time, kind, to, delivered_to, subject, id | error}. Never raises for a provider error."""
     e = load()["email"]
     ok, why = ready()
@@ -98,7 +138,7 @@ def send(to, subject, title, intro, rows, body="", button=None, kind="email"):
     try:
         r = httpx.post(API, timeout=20, headers={"Authorization": f"Bearer {e['api_key']}"},
                        json={"from": e["from"], "to": [real_to], "subject": subject, "text": text,
-                             "html": _page(title, intro, rows, body, button, meant)})
+                             "html": _page(title, intro, rows, body, button, meant, kind, amount, eyebrow)})
         data = r.json() if r.content else {}
         if r.status_code >= 400:
             return {**entry, "error": f"Resend {r.status_code}: {data.get('message') or data}"}

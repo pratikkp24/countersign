@@ -492,7 +492,8 @@ def email_approvers(cid):
             f"{a['name'].split()[0]}, a payment needs your approval",
             f"The agent read {d.get('invoice')} and every policy check passed. Nothing is paid until the people "
             f"listed approve it.", rows, button=("Review and approve", f"{APP_URL}/#case={cid}"),
-            kind="approval_request")))
+            kind="approval_request", amount=usd(d.get("amount", 0)),
+            eyebrow=f"{d.get('invoice')} · {d.get('vendor')}")))
     return out
 
 
@@ -506,7 +507,8 @@ def send_remittance(cid):
         rows.append(("PayPal transaction", p["transaction_id"]))
     return log_email(cid, mailer.send(
         to, f"Payment sent: {d.get('invoice')} ({usd(p.get('amount', 0))})", "Your invoice has been paid",
-        f"{cfg.load()['company']} has paid {d.get('invoice')} through PayPal.", rows, kind="remittance"))
+        f"{cfg.load()['company']} has paid {d.get('invoice')} through PayPal.", rows, kind="remittance",
+        amount=usd(p.get("amount", 0)), eyebrow=f"Remittance advice · {d.get('invoice')}"))
 
 
 ADVICE = {
@@ -588,7 +590,8 @@ def email(cid: str, body: EmailIn):
         sent = [log_email(cid, mailer.send(to, body.subject or f"{r.get('invoice_no')}: on hold", "Your invoice is on hold",
                                            f"About {r.get('invoice_no')}", [("Invoice", r.get("invoice_no")),
                                                                             ("Your PO", r.get("po"))],
-                                           body=body.body, kind="supplier_note"))]
+                                           body=body.body, kind="supplier_note",
+                                           eyebrow=f"{cfg.load()['company']} · Accounts payable"))]
     else:
         raise HTTPException(400, "unknown email")
     errors = [s["error"] for s in sent if s.get("error")]
@@ -704,7 +707,9 @@ def test_connector(name: str):
         elif name == "email":
             e = mailer.send(mailer.load()["email"]["deliver_to"] or "", "Countersign: email is connected",
                             "Email is connected", "Countersign can now send approval requests, supplier notes and "
-                            "remittance advice.", [("Sent from", "Connectors > Email (Resend)")], kind="test")
+                            "remittance advice.", [("Sent from", "Connectors > Email (Resend)"),
+                                                   ("Safe delivery", "On" if mailer.load()["email"]["safe_delivery"] else "Off")],
+                            kind="test", eyebrow="Connectors")
             if e.get("error"):
                 raise RuntimeError(e["error"])
             msg = f"Test email sent to {e['delivered_to']}"
