@@ -20,7 +20,10 @@ Countersign lets an AI model do the reading and keeps the paying under rules and
 4. **Only then does PayPal move the money**, through the Payouts API on the sandbox, to the address in the vendor
    master, never the one in the invoice. The `sender_batch_id` is derived from the hash of the approved decision record,
    so PayPal itself refuses to pay the same decision twice.
-5. **Everything is evidence.** Each decision, each approval and the PayPal payout batch are Ed25519-signed,
+5. **People hear about it by email** (Resend): approvers get an approval request with the invoice summary and a link
+   straight to it, suppliers get remittance advice when PayPal pays, and for a blocked invoice the model drafts a note
+   to the supplier that a person edits and sends, always to the address in the vendor master.
+6. **Everything is evidence.** Each decision, each approval and the PayPal payout batch are Ed25519-signed,
    hash-chained records. The Ledger tab and `shio verify` check that nothing was edited, removed or reordered.
 
 ## The demo inbox
@@ -34,6 +37,18 @@ Countersign lets an AI model do the reading and keeps the paying under rules and
 | INV-0977 Brightline Audio, USD 360 | Blocked `DUPLICATE`: already paid on 14 Oct |
 
 You can also upload your own PDF invoice.
+
+## Settings and connectors
+
+- **Settings > Payment policy**: the PO tolerance and the amount above which a second person approves. Only a finance
+  controller can change them; each change is written to the ledger, and every decision records the policy version
+  it was made under.
+- **Settings > Approvers**: who can approve, as which role, and where their approval requests go. Approving means
+  picking a listed person; the agent can never be one.
+- **Settings > AI reader**: gpt-oss-120b or gpt-oss-20b on Groq, Claude Sonnet or Opus, or replay.
+- **Connectors**: PayPal (test the connection), the AI reader, Email (Resend, with *safe delivery* that sends every
+  email to one inbox, marked with who it was meant for), Accounting (import the vendor master and POs from CSV, export
+  payments for reconciliation), and the Shio ledger (download it for audit with the public key).
 
 ## Run it
 
@@ -82,6 +97,8 @@ Open http://localhost:8090, press **Read all**, open an invoice and approve it.
 
 - **gpt-oss-120b on Groq** (`openai/gpt-oss-120b`, Groq's OpenAI-compatible API) reads the text of each invoice PDF
   and returns a typed reading through structured output (JSON schema). The model id is pinned in every decision record.
+- The same model drafts the note to a supplier about a blocked invoice (free text, never a decision; a person edits
+  and sends it).
 - **Claude** (Anthropic API) is supported as the reader too (`COUNTERSIGN_MODEL=claude-sonnet-5-5`); it reads the PDF
   itself as a document.
 - **Shio** (open source, Aonami's agent language) keeps the model's reading away from the payment until the checks

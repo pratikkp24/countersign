@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
 <header class="top">
@@ -16,6 +16,8 @@
     <button role="tab" data-view="inbox" class="on">Inbox</button>
     <button role="tab" data-view="ledger">Ledger</button>
     <button role="tab" data-view="records">Vendors &amp; POs</button>
+    <button role="tab" data-view="connectors">Connectors</button>
+    <button role="tab" data-view="settings">Settings</button>
   </nav>
   <div class="env" id="env"></div>
 </header>
@@ -66,12 +68,36 @@
       <div id="records"></div>
     </div>
   </section>
+
+  <section id="view-connectors" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Connectors</div>
+          <h1>Where Countersign reads, pays and writes</h1>
+        </div>
+      </div>
+      <div id="connectors"></div>
+    </div>
+  </section>
+
+  <section id="view-settings" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Settings</div>
+          <h1>Payment policy and the people who approve</h1>
+        </div>
+      </div>
+      <div id="settings"></div>
+    </div>
+  </section>
 </main>
 
 <footer class="foot">Harbor &amp; Pine Studio and its suppliers are fictional. Payments run on the PayPal sandbox; no real money moves.</footer>
 <div class="toast" id="toast" role="status"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

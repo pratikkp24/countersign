@@ -39,7 +39,7 @@ load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "agent"))
 
 from fastapi import FastAPI, HTTPException, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
@@ -50,6 +50,8 @@ from shio.core import _signer, last_run  # noqa: E402
 
 import erp as erp_mod  # noqa: E402
 import invoices  # noqa: E402
+import mailer  # noqa: E402
+import settings as cfg  # noqa: E402
 from paypal import PayPal, PayPalError  # noqa: E402
 
 DATA = erp_mod.DB.parent
@@ -57,19 +59,38 @@ RECORDS = DATA / "records"
 CASES = DATA / "cases.json"
 KEYS = DATA / "keys"
 AGENT = "countersign-agent"          # the requester and maker of every decision: it can never sign one off
-MODEL = os.getenv("COUNTERSIGN_MODEL") or (
-    "claude-sonnet-5-5" if os.getenv("ANTHROPIC_API_KEY")
-    else "groq:openai/gpt-oss-120b" if os.getenv("GROQ_API_KEY")
-    else "replay")
-ROLES = {"ap_approver": "AP approver", "controller": "Finance controller"}
-CHECKS = {
-    "known_vendor": "Supplier is in the vendor master",
-    "payee_on_file": "Pays the PayPal account on file",
-    "open_po": "Matches an open purchase order",
-    "within_po": "Total within the PO (+2%)",
-    "not_paid": "Not already paid",
-    "usd": "Currency is USD",
-}
+APP_URL = os.getenv("COUNTERSIGN_URL", "http://localhost:8090")
+ROLES = cfg.ROLES
+READERS = [  # (id, label, which key it needs)
+    ("groq:openai/gpt-oss-120b", "gpt-oss-120b on Groq", "GROQ_API_KEY"),
+    ("groq:openai/gpt-oss-20b", "gpt-oss-20b on Groq (faster)", "GROQ_API_KEY"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5", "ANTHROPIC_API_KEY"),
+    ("claude-opus-5-5", "Claude Opus 5.5", "ANTHROPIC_API_KEY"),
+    ("replay", "Replay (recorded readings, no model)", None),
+]
+
+
+def readers():
+    return [{"id": i, "label": l, "available": k is None or bool(os.getenv(k))} for i, l, k in READERS]
+
+
+def current_model():
+    """The reader chosen in Settings if its key is set, else COUNTERSIGN_MODEL, else the best one a key exists for."""
+    chosen = cfg.load().get("reader")
+    if chosen and any(r["id"] == chosen and r["available"] for r in readers()):
+        return chosen
+    return os.getenv("COUNTERSIGN_MODEL") or next(r["id"] for r in readers() if r["available"])
+
+
+def check_labels(policy):
+    return {
+        "known_vendor": "Supplier is in the vendor master",
+        "payee_on_file": "Pays the PayPal account on file",
+        "open_po": "Matches an open purchase order",
+        "within_po": f"Total within the PO (+{policy['tolerance']:.0%})",
+        "not_paid": "Not already paid",
+        "usd": f"Currency is {policy['currency']}",
+    }
 
 lock = threading.RLock()
 
@@ -93,14 +114,35 @@ PAYPAL = PayPal()
 
 
 def model():
-    if MODEL == "replay":
+    m = current_model()
+    if m == "replay":
         return replay_model()
-    if MODEL.startswith("groq:"):
+    if m.startswith("groq:"):
         # Groq's OpenAI-compatible endpoint. The model reads the PDF's extracted text; the id is pinned in each record.
-        name = MODEL.removeprefix("groq:")
+        name = m.removeprefix("groq:")
         return shio.models.openai_compat(name, "https://api.groq.com/openai/v1", key_env="GROQ_API_KEY", pinned=name,
                                          timeout=60)
-    return shio.models.anthropic(MODEL, max_tokens=2000)
+    return shio.models.anthropic(m, max_tokens=2000)
+
+
+def write_text(system, prompt):
+    """Free text from the reader model (supplier messages). Not a decision: nothing here moves money."""
+    m = current_model()
+    if m == "replay":
+        return None
+    if m.startswith("groq:"):
+        import httpx
+        r = httpx.post("https://api.groq.com/openai/v1/chat/completions", timeout=60,
+                       headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}",
+                                "User-Agent": "countersign/0.1"},
+                       json={"model": m.removeprefix("groq:"), "temperature": 0.3,
+                             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}]})
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"].strip()
+    import anthropic
+    msg = anthropic.Anthropic().messages.create(model=m, max_tokens=800, system=system,
+                                               messages=[{"role": "user", "content": prompt}])
+    return "".join(b.text for b in msg.content if b.type == "text").strip()
 
 
 def replay_model():
@@ -111,7 +153,7 @@ def replay_model():
     for s in invoices.specs():
         total = sum(q * r for _, q, r in s["lines"])
         known[s["no"]] = {"vendor": s["vendor"], "invoice_no": s["no"], "po": s["po"], "amount": total,
-                          "currency": "USD", "pay_to": s["pay_to"], "summary": s["lines"][0][0]}
+                          "currency": "USD", "pay_to": s["pay_to"], "summary": s["lines"][0][0], "due_date": s["due"]}
 
     def answer(req):
         text = " ".join((src.text or "") for src in req.sources)
@@ -166,10 +208,15 @@ app = FastAPI(title="Countersign")
 @app.get("/api/state")
 def state():
     cases = sync_inbox()
+    s = cfg.load()
+    m = current_model()
     return {
-        "config": {"paypal": PayPal.configured(), "model": MODEL,
-                   "anthropic": MODEL == "replay" or bool(os.getenv("GROQ_API_KEY") if MODEL.startswith("groq:") else os.getenv("ANTHROPIC_API_KEY")),
-                   "agent": AGENT, "roles": ROLES, "dual_limit": PROGRAM.DUAL_LIMIT, "tolerance": PROGRAM.TOLERANCE},
+        "config": {"paypal": PayPal.configured(), "model": m,
+                   "model_label": next((r["label"] for r in readers() if r["id"] == m), m),
+                   "anthropic": True, "agent": AGENT, "roles": ROLES, "policy": s["policy"],
+                   "dual_limit": s["policy"]["dual_limit"], "tolerance": s["policy"]["tolerance"],
+                   "approvers": s["approvers"], "company": s["company"], "auto_refresh": s["auto_refresh"],
+                   "email": mailer.public()},
         "cases": sorted(cases.values(), key=lambda c: c["received"]),
         "erp": ERP.snapshot(),
     }
@@ -184,7 +231,8 @@ def run_case(cid: str):
         doc = shio.Source.from_pdf(invoices.FOLDER / case["file"], name=case["file"])
         started = time.time()
         try:
-            out = PROGRAM.pay_invoice(doc, ERP, AGENT, model())
+            policy = cfg.load()["policy"]
+            out = PROGRAM.pay_invoice(doc, ERP, AGENT, policy, model())
         except Exception as e:
             raise HTTPException(502, f"the agent run failed: {type(e).__name__}: {e}")
         run = last_run["run"]
@@ -195,21 +243,24 @@ def run_case(cid: str):
         reasons = dict(zip(decided.get("codes") or [], decided.get("reasons") or []))
         checks = []
         for c in run.checks:
-            checks.append({"name": c["name"], "label": CHECKS.get(c["name"], c["name"]), "code": c.get("code"),
+            checks.append({"name": c["name"], "label": check_labels(policy).get(c["name"], c["name"]), "code": c.get("code"),
                            "passed": c["passed"], "skipped": bool(c.get("skipped")),
                            "detail": reasons.get(c.get("code"), "")})
         case.update({
             "status": "PENDING" if out.get("status") == "PENDING" else decided.get("action", "BLOCK"),
-            "reading": reading.get("value"), "read_by": reading.get("model") or MODEL,
+            "reading": reading.get("value"), "read_by": reading.get("model") or current_model(),
             "read_error": reading.get("error"), "checks": checks, "decided": decided,
             "record": record.name, "record_sha256": ledger._record_entry(ledger._entries(RECORDS), record.name)["sha256"],
             "seconds": round(time.time() - started, 1), "ran_at": time.time(),
         })
         if case["status"] == "PENDING":
             case["signoff"] = signoff_view(record)
+        case.pop("draft", None)
         cases[cid] = case
         save_cases(cases)
-        return case
+    if case["status"] == "PENDING" and mailer.load()["email"]["auto_approval_requests"] and mailer.ready()[0]:
+        email_approvers(cid)
+    return load_cases()[cid]
 
 
 class SignIn(BaseModel):
@@ -228,6 +279,13 @@ def sign(cid: str, body: SignIn):
         case = cases[cid]
         if case.get("status") not in ("PENDING",):
             raise HTTPException(409, f"this invoice is {case.get('status')}, not waiting for sign-off")
+        person = next((a for a in cfg.load()["approvers"] if a["name"].lower() == body.name.strip().lower()), None)
+        if body.name.strip().lower() == AGENT.lower():
+            raise HTTPException(403, plain_refusal("requested or made this decision", AGENT, body.role))
+        if person is None:
+            raise HTTPException(403, f"{body.name.strip()} is not in the approver list (Settings > Approvers)")
+        if body.role not in person["roles"]:
+            raise HTTPException(403, f"{person['name']} cannot approve as {ROLES.get(body.role, body.role)} (Settings > Approvers)")
         meaning = body.note.strip() or ("approved for payment via PayPal Payouts" if body.approve else "rejected")
         try:
             ledger.signoff(RECORDS / case["record"], body.name.strip(), body.role, meaning, _signer(),
@@ -245,7 +303,9 @@ def sign(cid: str, body: SignIn):
             return pay(cid)
         cases[cid] = case
         save_cases(cases)
-        return case
+    if view["state"] == "PENDING" and mailer.load()["email"]["auto_approval_requests"] and mailer.ready()[0]:
+        email_approvers(cid)
+    return load_cases()[cid]
 
 
 def plain_refusal(msg, who, role):
@@ -303,7 +363,11 @@ def pay(cid):
         case.pop("payout_error", None)
         cases[cid] = case
         save_cases(cases)
-    return refresh(cid)
+    out = refresh(cid)
+    if mailer.load()["email"]["auto_remittance"] and mailer.ready()[0]:
+        send_remittance(cid)
+        out = load_cases()[cid]
+    return out
 
 
 @app.post("/api/cases/{cid}/pay")
@@ -385,7 +449,312 @@ def reset():
             p.unlink()
         invoices.ensure(force=True)
         sync_inbox()
+        st = cfg.load()                  # the policy goes back to its defaults; people, reader and email stay
+        st["policy"], st["history"] = dict(cfg.DEFAULT["policy"]), []
+        cfg.save(st)
     return {"ok": True}
+
+
+# -- email ------------------------------------------------------------------------------------------------------------
+
+def log_email(cid, entry):
+    with lock:
+        cases = load_cases()
+        cases[cid].setdefault("emails", []).insert(0, entry)
+        save_cases(cases)
+    return entry
+
+
+def usd(n):
+    return f"USD {float(n):,.2f}"
+
+
+def email_approvers(cid):
+    """Ask each person who can approve a waiting role. -> the log entries."""
+    case = load_cases()[cid]
+    d, so = case.get("decided") or {}, case.get("signoff") or {}
+    waiting = so.get("waiting_for", [])
+    signed = {s["signer"].lower() for s in so.get("signed", [])}
+    out = []
+    for a in cfg.load()["approvers"]:
+        roles = [r for r in a["roles"] if r in waiting]
+        if not roles or a["name"].lower() in signed or not a.get("email"):
+            continue
+        role = ROLES[roles[0]]
+        rows = [("Supplier", d.get("vendor")), ("Invoice", d.get("invoice")), ("PO", d.get("po")),
+                ("Amount", usd(d.get("amount", 0))), ("Pays", f"{d.get('pay_to')} (PayPal account on file)"),
+                ("Checks", f"{sum(1 for c in case.get('checks', []) if c['passed'])} of {len(case.get('checks', []))} passed"),
+                ("You approve as", role)]
+        if so.get("signed"):
+            rows.append(("Already approved by", ", ".join(f"{s['signer']} ({ROLES.get(s['role'], s['role'])})" for s in so["signed"])))
+        out.append(log_email(cid, mailer.send(
+            a["email"], f"Approve: {d.get('invoice')} · {d.get('vendor')} · {usd(d.get('amount', 0))}",
+            f"{a['name'].split()[0]}, a payment needs your approval",
+            f"The agent read {d.get('invoice')} and every policy check passed. Nothing is paid until the people "
+            f"listed approve it.", rows, button=("Review and approve", f"{APP_URL}/#case={cid}"),
+            kind="approval_request")))
+    return out
+
+
+def send_remittance(cid):
+    case = load_cases()[cid]
+    d, p = case.get("decided") or {}, case.get("payout") or {}
+    to = ERP.payee(d.get("vendor"))
+    rows = [("Invoice", d.get("invoice")), ("Your PO", d.get("po")), ("Amount", usd(p.get("amount", 0))),
+            ("Paid to", f"{to} (PayPal)"), ("PayPal batch", p.get("payout_batch_id"))]
+    if p.get("transaction_id"):
+        rows.append(("PayPal transaction", p["transaction_id"]))
+    return log_email(cid, mailer.send(
+        to, f"Payment sent: {d.get('invoice')} ({usd(p.get('amount', 0))})", "Your invoice has been paid",
+        f"{cfg.load()['company']} has paid {d.get('invoice')} through PayPal.", rows, kind="remittance"))
+
+
+ADVICE = {
+    "PAYEE_CHANGED": "We never change payment details because an invoice or email asks us to. We will call the "
+                     "contact we have on file to confirm any change before paying.",
+    "OVER_PO": "Please send a corrected invoice within the purchase order, or ask your contact to raise a change order.",
+    "DUPLICATE": "Our records show this invoice was already paid; the remittance went to the PayPal account on file.",
+    "NO_OPEN_PO": "Please quote an open purchase order number from us.",
+    "UNKNOWN_VENDOR": "You are not set up as a supplier yet; please contact your project lead to be added.",
+    "NOT_USD": "Please invoice in the currency on your purchase order.",
+}
+
+
+@app.post("/api/cases/{cid}/draft")
+def draft(cid: str):
+    """The model drafts a short note to the supplier about why an invoice is on hold. A person edits and sends it."""
+    case = case_or_404(cid)[cid]
+    if case.get("status") not in ("BLOCK", "REJECTED"):
+        raise HTTPException(409, "only blocked or rejected invoices get a supplier note")
+    d, r = case.get("decided") or {}, case.get("reading") or {}
+    vendor = d.get("vendor") or r.get("vendor")
+    to = ERP.payee(vendor)
+    reasons = [f"{c['code']}: {c['detail'] or c['label']}" for c in case.get("checks", []) if not c["passed"] and not c["skipped"]]
+    codes = [c["code"] for c in case.get("checks", []) if not c["passed"] and not c["skipped"]]
+    facts = (f"Supplier: {vendor}\nInvoice: {r.get('invoice_no')}\nPO: {r.get('po')}\nAmount: {r.get('amount')}\n"
+             f"Why it is on hold:\n- " + "\n- ".join(reasons) + "\nWhat we need:\n- " +
+             "\n- ".join(ADVICE.get(c, "") for c in codes if c in ADVICE))
+    body = None
+    try:
+        body = write_text(
+            "You write short, polite emails from an accounts-payable team to a supplier. Plain text, no subject line, "
+            "no markdown, under 120 words, signed 'Accounts Payable, " + cfg.load()["company"] + "'. State the facts "
+            "given and what the supplier should do. Never ask for bank or PayPal details by email, never accuse, and "
+            "never include an address or link that is not in the facts.", facts)
+    except Exception:
+        body = None
+    if not body:
+        body = (f"Hello,\n\nThank you for invoice {r.get('invoice_no')}. We have put it on hold:\n- " +
+                "\n- ".join(reasons) + "\n\n" + " ".join(ADVICE.get(c, "") for c in codes) +
+                f"\n\nAccounts Payable, {cfg.load()['company']}")
+    out = {"to": to, "subject": f"{r.get('invoice_no')}: on hold", "body": body,
+           "note": None if to else f"{vendor} is not in the vendor master, so there is no address on file to write to."}
+    with lock:
+        cases = load_cases()
+        cases[cid]["draft"] = out
+        save_cases(cases)
+    return out
+
+
+class EmailIn(BaseModel):
+    kind: str
+    subject: str = ""
+    body: str = ""
+
+
+@app.post("/api/cases/{cid}/email")
+def email(cid: str, body: EmailIn):
+    case = case_or_404(cid)[cid]
+    ok, why = mailer.ready()
+    if not ok:
+        raise HTTPException(409, why)
+    if body.kind == "approval_request":
+        if case.get("status") != "PENDING":
+            raise HTTPException(409, "this invoice is not waiting for approval")
+        sent = email_approvers(cid)
+        if not sent:
+            raise HTTPException(409, "no approver with an email address is waiting on this invoice")
+    elif body.kind == "remittance":
+        if case.get("status") != "PAID":
+            raise HTTPException(409, "this invoice has not been paid")
+        sent = [send_remittance(cid)]
+    elif body.kind == "supplier_note":
+        r = case.get("reading") or {}
+        to = ERP.payee((case.get("decided") or {}).get("vendor") or r.get("vendor"))
+        if not to:                      # the address on the invoice is never used
+            raise HTTPException(409, "this supplier is not in the vendor master, so there is no address on file")
+        if not body.body.strip():
+            raise HTTPException(400, "the message is empty")
+        sent = [log_email(cid, mailer.send(to, body.subject or f"{r.get('invoice_no')}: on hold", "Your invoice is on hold",
+                                           f"About {r.get('invoice_no')}", [("Invoice", r.get("invoice_no")),
+                                                                            ("Your PO", r.get("po"))],
+                                           body=body.body, kind="supplier_note"))]
+    else:
+        raise HTTPException(400, "unknown email")
+    errors = [s["error"] for s in sent if s.get("error")]
+    if errors:
+        raise HTTPException(502, errors[0])
+    return load_cases()[cid]
+
+
+# -- settings ---------------------------------------------------------------------------------------------------------
+
+class SettingsIn(BaseModel):
+    by: str = ""
+    policy: dict | None = None
+    approvers: list | None = None
+    reader: str | None = None
+    auto_refresh: bool | None = None
+    company: str | None = None
+
+
+@app.get("/api/settings")
+def get_settings():
+    s = cfg.load()
+    return {**s, "readers": readers(), "current_reader": current_model(), "roles": ROLES, "agent": AGENT}
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsIn):
+    with lock:
+        s = cfg.load()
+        try:
+            if body.policy is not None:
+                new = cfg.validate_policy(body.policy)
+                before = {k: s["policy"][k] for k in ("tolerance", "dual_limit", "currency")}
+                if new != before:
+                    who = body.by.strip()
+                    if not any(a["name"].lower() == who.lower() and "controller" in a["roles"] for a in s["approvers"]):
+                        raise ValueError("a finance controller from the approver list must make policy changes")
+                    after = {**new, "version": s["policy"]["version"] + 1}
+                    PROGRAM.set_policy({**before, "version": s["policy"]["version"]}, after, who)
+                    cfg.record_change(s, who, before, new)
+                    s["policy"] = after
+            if body.approvers is not None:
+                s["approvers"] = cfg.validate_approvers(body.approvers, AGENT)
+            if body.reader is not None:
+                if not any(r["id"] == body.reader and r["available"] for r in readers()):
+                    raise ValueError("that model is not available: its API key is not set")
+                s["reader"] = body.reader
+            if body.auto_refresh is not None:
+                s["auto_refresh"] = body.auto_refresh
+            if body.company:
+                s["company"] = body.company.strip()[:80]
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        cfg.save(s)
+    return get_settings()
+
+
+# -- connectors -------------------------------------------------------------------------------------------------------
+
+@app.get("/api/connectors")
+def connectors():
+    cid_ = os.getenv("PAYPAL_CLIENT_ID", "")
+    entries = ledger._entries(RECORDS)
+    pub = KEYS / "shio-signing.pub"
+    return {
+        "paypal": {"configured": PayPal.configured(), "environment": "sandbox", "base": PAYPAL.http.base_url.host,
+                   "client_id": (cid_[:6] + "…" + cid_[-4:]) if cid_ else "", "apis": ["OAuth 2.0", "Payouts"]},
+        "reader": {"model": current_model(), "readers": readers()},
+        "email": mailer.public(),
+        "accounting": {"vendors": len(ERP.snapshot()["vendors"]), "purchase_orders": len(ERP.snapshot()["purchase_orders"]),
+                       "payments": len(ERP.snapshot()["payments"])},
+        "ledger": {"entries": len(entries), "key": ledger.key_id(ledger.load_public_key(pub)) if pub.exists() else None},
+    }
+
+
+class EmailConn(BaseModel):
+    api_key: str | None = None
+    from_: str | None = None
+    deliver_to: str | None = None
+    safe_delivery: bool | None = None
+    auto_approval_requests: bool | None = None
+    auto_remittance: bool | None = None
+
+
+@app.put("/api/connectors/email")
+def put_email(body: EmailConn):
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "from_" in patch:
+        patch["from"] = patch.pop("from_")
+    if patch.get("deliver_to") and "@" not in patch["deliver_to"]:
+        raise HTTPException(400, "the safe-delivery inbox must be an email address")
+    mailer.save_email(patch)
+    return connectors()
+
+
+@app.post("/api/connectors/{name}/test")
+def test_connector(name: str):
+    t = time.time()
+    try:
+        if name == "paypal":
+            if not PayPal.configured():
+                raise RuntimeError("set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET in .env.local")
+            PAYPAL._token = None
+            PAYPAL.token()
+            msg = "Signed in to the PayPal sandbox (OAuth client credentials)"
+        elif name == "reader":
+            m = current_model()
+            if m == "replay":
+                msg = "Replay model: no API call"
+            else:
+                out = write_text("Answer with one word.", "Say ready.")
+                msg = f"{m} answered: {out[:40]}"
+        elif name == "email":
+            e = mailer.send(mailer.load()["email"]["deliver_to"] or "", "Countersign: email is connected",
+                            "Email is connected", "Countersign can now send approval requests, supplier notes and "
+                            "remittance advice.", [("Sent from", "Connectors > Email (Resend)")], kind="test")
+            if e.get("error"):
+                raise RuntimeError(e["error"])
+            msg = f"Test email sent to {e['delivered_to']}"
+        else:
+            raise HTTPException(404, "no such connector")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"{type(e).__name__}: {e}")
+    return {"ok": True, "message": msg, "ms": int((time.time() - t) * 1000)}
+
+
+@app.post("/api/import/{kind}")
+async def import_csv(kind: str, file: UploadFile):
+    text = (await file.read()).decode("utf-8", errors="replace")
+    try:
+        n = erp_mod.import_vendors(ERP, text) if kind == "vendors" else erp_mod.import_pos(ERP, text) if kind == "pos" else None
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if n is None:
+        raise HTTPException(404, "import vendors or pos")
+    return {"ok": True, "imported": n}
+
+
+@app.get("/api/export/payments.csv")
+def export_payments():
+    return Response(erp_mod.payments_csv(ERP), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=countersign-payments.csv"})
+
+
+@app.get("/api/templates/{kind}.csv")
+def csv_template(kind: str):
+    return Response(erp_mod.template(kind), media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={kind}-template.csv"})
+
+
+@app.get("/api/ledger/download")
+def download_ledger():
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(RECORDS.glob("*")) if RECORDS.exists() else []:
+            z.write(f, f"records/{f.name}")
+        pub = KEYS / "shio-signing.pub"
+        if pub.exists():
+            z.write(pub, "shio-signing.pub")
+        z.writestr("VERIFY.txt", "pip install shio-lang\nshio verify records --pubkey shio-signing.pub\n")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": "attachment; filename=countersign-ledger.zip"})
 
 
 @app.exception_handler(HTTPException)

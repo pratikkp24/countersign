@@ -107,3 +107,67 @@ class ERP:
         return {"vendors": q("SELECT * FROM vendors ORDER BY name"),
                 "purchase_orders": q("SELECT * FROM purchase_orders ORDER BY po"),
                 "payments": q("SELECT * FROM payments ORDER BY paid_on DESC")}
+
+
+# -- the accounting connector: CSV in, CSV out ------------------------------------------------------------------------
+
+import csv  # noqa: E402
+import io  # noqa: E402
+
+VENDOR_COLS = ["name", "paypal_email", "category"]
+PO_COLS = ["po", "vendor", "amount", "item"]
+
+
+def _rows(text, cols):
+    reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
+    head = [h.strip().lower() for h in (reader.fieldnames or [])]
+    missing = [c for c in cols if c not in head and c not in ("category", "item")]
+    if missing:
+        raise ValueError(f"the CSV needs the columns {', '.join(cols)} (missing {', '.join(missing)})")
+    for r in reader:
+        yield {k.strip().lower(): (v or "").strip() for k, v in r.items() if k}
+
+
+def import_vendors(erp, text):
+    n = 0
+    for r in _rows(text, VENDOR_COLS):
+        if not r.get("name") or "@" not in r.get("paypal_email", ""):
+            continue
+        erp.db.execute("INSERT INTO vendors VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+                       "paypal_email = excluded.paypal_email, category = excluded.category",
+                       (r["name"], r["paypal_email"].lower(), r.get("category", "")))
+        n += 1
+    erp.db.commit()
+    return n
+
+
+def import_pos(erp, text):
+    n = 0
+    for r in _rows(text, PO_COLS):
+        try:
+            amount = float(r.get("amount", "").replace(",", ""))
+        except ValueError:
+            continue
+        if not r.get("po") or not r.get("vendor"):
+            continue
+        erp.db.execute("INSERT INTO purchase_orders VALUES (?, ?, ?, ?, 'open') ON CONFLICT(po) DO UPDATE SET "
+                       "vendor = excluded.vendor, amount = excluded.amount, item = excluded.item",
+                       (r["po"], r["vendor"], amount, r.get("item", "")))
+        n += 1
+    erp.db.commit()
+    return n
+
+
+def payments_csv(erp):
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["paid_on", "vendor", "invoice_no", "amount", "currency", "paypal_payout_batch_id"])
+    for p in erp.db.execute("SELECT * FROM payments ORDER BY paid_on DESC").fetchall():
+        w.writerow([p["paid_on"], p["vendor"], p["invoice_no"], f"{p['amount']:.2f}", "USD", p["payout_batch_id"] or ""])
+    return out.getvalue()
+
+
+def template(kind):
+    if kind == "vendors":
+        return "name,paypal_email,category\nAcme Print Co.,billing@acmeprint.example.com,Printing\n"
+    return "po,vendor,amount,item\nPO-2300,Acme Print Co.,950.00,Spring catalogue print run\n"

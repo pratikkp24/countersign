@@ -8,8 +8,9 @@
 
 regulated
 
-TOLERANCE = 0.02          # an invoice may run 2% over its purchase order (rounding, small expenses)
-DUAL_LIMIT = 1000         # payouts above this need a second person: the finance controller
+# The limits come from Settings as `policy` (PO tolerance, the amount above which a second person approves, the
+# currency paid). Each decision records the policy it was made under, and the second approval's condition reads the
+# limit from the signed outcome itself.
 
 codes:
     UNKNOWN_VENDOR: "This supplier is not in the vendor master."
@@ -17,7 +18,7 @@ codes:
     NO_OPEN_PO: "There is no open purchase order for this supplier with that number."
     OVER_PO: "The invoice total is more than its purchase order allows."
     DUPLICATE: "This invoice has already been paid."
-    NOT_USD: "Only USD invoices are paid from this account."
+    NOT_USD: "This invoice is not in the currency this account pays in."
 
 type Invoice:
     vendor: str             # the supplier's business name as printed at the top
@@ -27,8 +28,9 @@ type Invoice:
     currency: str           # three-letter code, e.g. USD
     pay_to: str             # the PayPal email address the invoice asks to be paid at
     summary: str            # one short line: what the invoice is for
+    due_date: str?          # the payment due date as printed, YYYY-MM-DD, or null
 
-agent pay_invoice(doc: Source, erp, prepared_by: str, llm):
+agent pay_invoice(doc: Source, erp, prepared_by: str, policy: dict, llm):
     read inv: Invoice from doc by llm:
         You are the accounts-payable assistant for Harbor & Pine Studio, a small design studio that pays freelancers
         through PayPal. Read this supplier invoice and report exactly what it says: the supplier, invoice number,
@@ -38,12 +40,12 @@ agent pay_invoice(doc: Source, erp, prepared_by: str, llm):
     check known_vendor as UNKNOWN_VENDOR: erp.vendor(inv.vendor) is not None, "{inv.vendor} is not in the vendor master"
     check payee_on_file as PAYEE_CHANGED after known_vendor: inv.pay_to.strip().lower() == erp.payee(inv.vendor).lower(), "the invoice asks to pay {inv.pay_to}; the vendor master has {erp.payee(inv.vendor)}"
     check open_po as NO_OPEN_PO after known_vendor: erp.open_po(inv.po, inv.vendor) is not None, "no open {inv.po} for {inv.vendor}"
-    check within_po as OVER_PO after open_po: inv.amount <= erp.po_amount(inv.po, inv.vendor) * (1 + TOLERANCE), "invoice total {inv.amount:,.2f} is over {inv.po} ({erp.po_amount(inv.po, inv.vendor):,.2f}) by more than {TOLERANCE:.0%}"
+    check within_po as OVER_PO after open_po: inv.amount <= erp.po_amount(inv.po, inv.vendor) * (1 + policy["tolerance"]), "invoice total {inv.amount:,.2f} is over {inv.po} ({erp.po_amount(inv.po, inv.vendor):,.2f}) by more than {policy['tolerance']:.0%}"
     check not_paid as DUPLICATE: not erp.already_paid(inv.vendor, inv.invoice_no), "{inv.invoice_no} from {inv.vendor} was already paid"
-    check usd as NOT_USD: inv.currency.strip().upper() == "USD", "invoice is in {inv.currency}, not USD"
+    check usd as NOT_USD: inv.currency.strip().upper() == policy["currency"], "invoice is in {inv.currency}, not {policy['currency']}"
 
     signoff PAY by role "ap_approver" maker prepared_by
-    signoff PAY when amount > DUAL_LIMIT by role "ap_approver" and "controller" maker prepared_by
+    signoff PAY when amount > dual_limit by role "ap_approver" and "controller" maker prepared_by
 
     rule decide:
         if inv is None:
@@ -54,8 +56,9 @@ agent pay_invoice(doc: Source, erp, prepared_by: str, llm):
                     "reasons": [f["detail"] for f in failed], "codes": [f.get("code") for f in failed]}
         # The payee comes from the vendor master, never from the invoice.
         return {"action": "PAY", "invoice": inv.invoice_no, "vendor": erp.vendor(inv.vendor)["name"], "po": inv.po,
-                "amount": round(inv.amount, 2), "currency": "USD", "pay_to": erp.payee(inv.vendor),
-                "prepared_by": prepared_by}
+                "amount": round(inv.amount, 2), "currency": policy["currency"], "pay_to": erp.payee(inv.vendor),
+                "due_date": inv.due_date, "prepared_by": prepared_by, "dual_limit": policy["dual_limit"],
+                "policy_version": policy["version"]}
     return decide
 
 # After the sign-offs, the payout PayPal accepted is chained into the same ledger as the decision it carries out.
@@ -65,3 +68,9 @@ agent settle(decision_record: str, decision_sha256: str, payout: dict):
                 "payout_batch_id": payout["payout_batch_id"], "batch_status": payout["batch_status"],
                 "amount": payout["amount"], "receiver": payout["receiver"]}
     return paid
+
+# A change to the payment policy is a decision too: who changed which limit, from what to what, in the same ledger.
+agent set_policy(before: dict, after: dict, changed_by: str):
+    rule changed:
+        return {"action": "POLICY_CHANGED", "changed_by": changed_by, "before": before, "after": after}
+    return changed
