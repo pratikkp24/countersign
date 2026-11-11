@@ -438,8 +438,10 @@ def reconcile():
         txs, refreshed = PAYPAL.transactions(start, end)
     except PayPalError as e:
         if e.status == 403:
-            return {"ok": False, "error": "PayPal refused Transaction Search for this app. Tick Transaction search under "
-                                          "the app's Features on developer.paypal.com."}
+            return {"ok": False, "code": "NOT_ENABLED",
+                    "error": "PayPal has not yet granted Transaction Search to this app (it is ticked under the app's "
+                             "Features on developer.paypal.com; PayPal can take a while to apply it). Payouts are "
+                             "unaffected: each payout's status, transaction ID and fee still come from the Payouts API."}
         return {"ok": False, "error": str(e)}
     refreshed_at = dt.datetime.fromisoformat(refreshed.replace("Z", "+00:00")).timestamp() if refreshed else None
     by_id = {}

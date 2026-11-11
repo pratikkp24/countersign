@@ -440,7 +440,7 @@ async function loadReconcile() {
     R = { ok: false, error: String(e) };
   }
   if (!R.ok) {
-    el.innerHTML = `<div class="banner"><span class="cross" style="width:26px;height:26px">!</span><div><div class="big">PayPal did not answer</div><div class="muted small">${esc(R.error)}</div></div></div>`;
+    el.innerHTML = `<div class="banner"><span class="cross" style="width:26px;height:26px">!</span><div><div class="big">${R.code === "NOT_ENABLED" ? "Waiting for PayPal to enable Transaction Search" : "PayPal did not answer"}</div><div class="muted small">${esc(R.error)}</div></div></div>`;
     return;
   }
   const n = (s) => R.ours.filter((r) => r.state === s).length;
