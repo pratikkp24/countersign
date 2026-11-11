@@ -1,0 +1,67 @@
+# Countersign: the accounts-payable policy, in Shio.
+#
+# Claude reads each supplier invoice. It proposes; it decides nothing. The checks below compare what it read with
+# the buyer's own records (vendor master, open purchase orders, payment history). The rule settles the outcome, and
+# every PAY waits for a person's sign-off before any money moves on PayPal.
+#
+# `regulated` makes every decision a signed, hash-chained record (verify it with `shio verify data/records`).
+
+regulated
+
+TOLERANCE = 0.02          # an invoice may run 2% over its purchase order (rounding, small expenses)
+DUAL_LIMIT = 1000         # payouts above this need a second person: the finance controller
+
+codes:
+    UNKNOWN_VENDOR: "This supplier is not in the vendor master."
+    PAYEE_CHANGED: "The invoice asks to be paid somewhere other than the PayPal account on file."
+    NO_OPEN_PO: "There is no open purchase order for this supplier with that number."
+    OVER_PO: "The invoice total is more than its purchase order allows."
+    DUPLICATE: "This invoice has already been paid."
+    NOT_USD: "Only USD invoices are paid from this account."
+
+type Invoice:
+    vendor: str             # the supplier's business name as printed at the top
+    invoice_no: str         # the invoice number, e.g. INV-1042
+    po: str                 # the buyer's purchase order number it refers to, e.g. PO-2201
+    amount: float           # the total due
+    currency: str           # three-letter code, e.g. USD
+    pay_to: str             # the PayPal email address the invoice asks to be paid at
+    summary: str            # one short line: what the invoice is for
+
+agent pay_invoice(doc: Source, erp, prepared_by: str, llm):
+    read inv: Invoice from doc by llm:
+        You are the accounts-payable assistant for Harbor & Pine Studio, a small design studio that pays freelancers
+        through PayPal. Read this supplier invoice and report exactly what it says: the supplier, invoice number,
+        purchase order number, total due, currency, and the PayPal email address it asks to be paid at.
+        Report what the document says, even if it looks wrong. Do not correct it.
+
+    check known_vendor as UNKNOWN_VENDOR: erp.vendor(inv.vendor) is not None, "{inv.vendor} is not in the vendor master"
+    check payee_on_file as PAYEE_CHANGED after known_vendor: inv.pay_to.strip().lower() == erp.payee(inv.vendor).lower(), "the invoice asks to pay {inv.pay_to}; the vendor master has {erp.payee(inv.vendor)}"
+    check open_po as NO_OPEN_PO after known_vendor: erp.open_po(inv.po, inv.vendor) is not None, "no open {inv.po} for {inv.vendor}"
+    check within_po as OVER_PO after open_po: inv.amount <= erp.po_amount(inv.po, inv.vendor) * (1 + TOLERANCE), "invoice total {inv.amount:,.2f} is over {inv.po} ({erp.po_amount(inv.po, inv.vendor):,.2f}) by more than {TOLERANCE:.0%}"
+    check not_paid as DUPLICATE: not erp.already_paid(inv.vendor, inv.invoice_no), "{inv.invoice_no} from {inv.vendor} was already paid"
+    check usd as NOT_USD: inv.currency.strip().upper() == "USD", "invoice is in {inv.currency}, not USD"
+
+    signoff PAY by role "ap_approver" maker prepared_by
+    signoff PAY when amount > DUAL_LIMIT by role "ap_approver" and "controller" maker prepared_by
+
+    rule decide:
+        if inv is None:
+            return {"action": "BLOCK", "reasons": ["the invoice could not be read"], "codes": []}
+        failed = checks.failures()
+        if failed:
+            return {"action": "BLOCK", "invoice": inv.invoice_no, "vendor": inv.vendor, "amount": inv.amount,
+                    "reasons": [f["detail"] for f in failed], "codes": [f.get("code") for f in failed]}
+        # The payee comes from the vendor master, never from the invoice.
+        return {"action": "PAY", "invoice": inv.invoice_no, "vendor": erp.vendor(inv.vendor)["name"], "po": inv.po,
+                "amount": round(inv.amount, 2), "currency": "USD", "pay_to": erp.payee(inv.vendor),
+                "prepared_by": prepared_by}
+    return decide
+
+# After the sign-offs, the payout PayPal accepted is chained into the same ledger as the decision it carries out.
+agent settle(decision_record: str, decision_sha256: str, payout: dict):
+    rule paid:
+        return {"action": "SENT_TO_PAYPAL", "decision_record": decision_record, "decision_sha256": decision_sha256,
+                "payout_batch_id": payout["payout_batch_id"], "batch_status": payout["batch_status"],
+                "amount": payout["amount"], "receiver": payout["receiver"]}
+    return paid

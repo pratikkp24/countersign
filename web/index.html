@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Countersign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span>Countersign</div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-view="inbox" class="on">Inbox</button>
+    <button role="tab" data-view="ledger">Ledger</button>
+    <button role="tab" data-view="records">Vendors &amp; POs</button>
+  </nav>
+  <div class="env" id="env"></div>
+</header>
+
+<main>
+  <section id="view-inbox" class="view on">
+    <aside class="list">
+      <div class="list-head">
+        <div>
+          <div class="eyebrow">Supplier invoices</div>
+          <div class="count" id="count"></div>
+        </div>
+        <div class="list-actions">
+          <label class="btn ghost small" title="Add your own PDF invoice">Upload<input type="file" id="upload" accept="application/pdf" hidden></label>
+          <button class="btn small" id="run-all">Read all</button>
+        </div>
+      </div>
+      <ul id="cases" role="listbox" aria-label="Invoices"></ul>
+    </aside>
+    <section class="detail" id="detail" aria-live="polite">
+      <div class="empty">Choose an invoice. The agent reads it, the policy checks it, and nothing is paid until people approve.</div>
+    </section>
+  </section>
+
+  <section id="view-ledger" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Decision ledger</div>
+          <h1>Every decision, approval and payout, signed and chained</h1>
+        </div>
+        <button class="btn ghost" id="verify">Verify again</button>
+      </div>
+      <div id="verify-out"></div>
+      <table class="tbl" id="ledger-tbl"></table>
+    </div>
+  </section>
+
+  <section id="view-records" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <div class="eyebrow">Harbor &amp; Pine Studio</div>
+          <h1>The records the policy trusts</h1>
+        </div>
+        <button class="btn ghost" id="reset">Reset demo</button>
+      </div>
+      <div id="records"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">Harbor &amp; Pine Studio and its suppliers are fictional. Payments run on the PayPal sandbox; no real money moves.</footer>
+<div class="toast" id="toast" role="status"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
+<script src="app.js?v=2"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+.venv/
+.env
+.env.local
+.env.*.local
+data/
+__pycache__/
+*.pyc
+.DS_Store
+# drafts for the Devpost form, kept local
+SUBMISSION.md
+VIDEO-SCRIPT.md

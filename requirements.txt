@@ -1,0 +1,10 @@
+shio-lang[anthropic,regulated] @ git+https://github.com/pratikkp24/shio@8fb5dd088d947b57643fced6eab69c13bd73efa9
+anthropic==2.8.0
+cryptography==50.0.2
+fastapi==0.162.4
+fpdf2==2.9.0
+httpx==0.28.1
+pypdf==7.0.1
+python-dotenv==1.2.4
+python-multipart==0.0.33
+uvicorn[standard]==0.54.0
