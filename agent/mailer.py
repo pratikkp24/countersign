@@ -91,10 +91,18 @@ def _page(title, intro, rows, body="", button=None, meant_for=None, kind="email"
         f'font:14px/1.4 {font};vertical-align:top;word-break:break-word">{esc(str(v))}</td></tr>' for k, v in rows if v)
     body_html = "".join(f'<p style="margin:0 0 14px;font:15px/1.65 {font};color:#222">{esc(p).replace(chr(10), "<br>")}</p>'
                         for p in body.split("\n\n") if p.strip())
-    btn = (f'<table role="presentation" cellspacing="0" cellpadding="0" style="margin:24px 0 4px"><tr>'
-           f'<td style="background:#111;border-radius:999px"><a href="{esc(button[1])}" style="display:inline-block;'
-           f'padding:12px 22px;font:500 14px {font};color:#ffffff;text-decoration:none">{esc(button[0])} &rarr;</a></td>'
-           f'</tr></table>') if button else ""
+    buttons = [button] if isinstance(button, tuple) else list(button or [])
+    styles = {"primary": ("#111", "#ffffff", "#111"), "positive": ("#1F6A4B", "#ffffff", "#1F6A4B"),
+              "danger": ("#ffffff", "#9A2A1F", "#E3B8B2"), "ghost": ("#ffffff", "#111", "#D9D6CF")}
+    cells = []
+    for b in buttons:
+        bg, fg, border = styles.get(b[2] if len(b) > 2 else "primary", styles["primary"])
+        cells.append(f'<td style="padding:0 8px 8px 0"><table role="presentation" cellspacing="0" cellpadding="0"><tr>'
+                     f'<td style="background:{bg};border:1px solid {border};border-radius:999px"><a href="{esc(b[1])}" '
+                     f'style="display:inline-block;padding:12px 22px;font:500 14px {font};color:{fg};text-decoration:none">'
+                     f'{esc(b[0])}</a></td></tr></table></td>')
+    btn = (f'<table role="presentation" cellspacing="0" cellpadding="0" style="margin:24px 0 0"><tr>{"".join(cells)}'
+           f'</tr></table>') if cells else ""
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light only"><title>{esc(title)}</title></head>
@@ -133,8 +141,9 @@ def send(to, subject, title, intro, rows, body="", button=None, kind="email", am
     real_to = e["deliver_to"] if e["safe_delivery"] else to
     entry["delivered_to"] = real_to
     meant = to if e["safe_delivery"] and real_to.lower() != str(to).lower() else None
-    text = f"{title}\n\n{intro}\n\n{body}\n\n" + "\n".join(f"{k}: {v}" for k, v in rows) + (
-        f"\n\n{button[0]}: {button[1]}" if button else "")
+    links = [button] if isinstance(button, tuple) else list(button or [])
+    text = f"{title}\n\n{intro}\n\n{body}\n\n" + "\n".join(f"{k}: {v}" for k, v in rows) + "".join(
+        f"\n\n{b[0]}: {b[1]}" for b in links)
     try:
         r = httpx.post(API, timeout=20, headers={"Authorization": f"Bearer {e['api_key']}"},
                        json={"from": e["from"], "to": [real_to], "subject": subject, "text": text,

@@ -20,8 +20,9 @@ Countersign lets an AI model do the reading and keeps the paying under rules and
 4. **Only then does PayPal move the money**, through the Payouts API on the sandbox, to the address in the vendor
    master, never the one in the invoice. The `sender_batch_id` is derived from the hash of the approved decision record,
    so PayPal itself refuses to pay the same decision twice.
-5. **People hear about it by email** (Resend): approvers get an approval request with the invoice summary and a link
-   straight to it, suppliers get remittance advice when PayPal pays, and for a blocked invoice the model drafts a note
+5. **People hear about it by email** (Resend): approvers get an approval request with **Approve** and **Reject**
+   buttons (links signed for that person, role and decision record, valid 72 hours; opening one shows a confirmation
+   page, so a mail scanner cannot approve), plus a link straight to the invoice, suppliers get remittance advice when PayPal pays, and for a blocked invoice the model drafts a note
    to the supplier that a person edits and sends, always to the address in the vendor master.
 6. **Everything is evidence.** Each decision, each approval and the PayPal payout batch are Ed25519-signed,
    hash-chained records. The Ledger tab and `shio verify` check that nothing was edited, removed or reordered.

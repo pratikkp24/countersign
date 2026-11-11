@@ -278,7 +278,7 @@ def sign(cid: str, body: SignIn):
         cases = case_or_404(cid)
         case = cases[cid]
         if case.get("status") not in ("PENDING",):
-            raise HTTPException(409, f"this invoice is {case.get('status')}, not waiting for sign-off")
+            raise HTTPException(409, f"this invoice is {STATUS_WORDS.get(case.get('status'), case.get('status'))}, not waiting for approval")
         person = next((a for a in cfg.load()["approvers"] if a["name"].lower() == body.name.strip().lower()), None)
         if body.name.strip().lower() == AGENT.lower():
             raise HTTPException(403, plain_refusal("requested or made this decision", AGENT, body.role))
@@ -491,7 +491,10 @@ def email_approvers(cid):
             a["email"], f"Approve: {d.get('invoice')} · {d.get('vendor')} · {usd(d.get('amount', 0))}",
             f"{a['name'].split()[0]}, a payment needs your approval",
             f"The agent read {d.get('invoice')} and every policy check passed. Nothing is paid until the people "
-            f"listed approve it.", rows, button=("Review and approve", f"{APP_URL}/#case={cid}"),
+            f"listed approve it.", rows,
+            button=[("Approve", approval_link(cid, case, a["name"], roles[0], "approve"), "positive"),
+                    ("Reject", approval_link(cid, case, a["name"], roles[0], "reject"), "danger"),
+                    ("Open in Countersign", f"{APP_URL}/#case={cid}", "ghost")],
             kind="approval_request", amount=usd(d.get("amount", 0)),
             eyebrow=f"{d.get('invoice')} · {d.get('vendor')}")))
     return out
@@ -760,6 +763,143 @@ def download_ledger():
         z.writestr("VERIFY.txt", "pip install shio-lang\nshio verify records --pubkey shio-signing.pub\n")
     return Response(buf.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": "attachment; filename=countersign-ledger.zip"})
+
+
+# -- approve from the email ------------------------------------------------------------------------------------------
+#
+# Each approval email carries links signed for one person, one role and one exact decision record, valid for 72 hours.
+# Opening a link only shows a confirmation page (mail scanners open links too); the approval happens on the button there,
+# and goes through the same ledger checks as the app: maker-checker, roles, the record unchanged.
+
+import base64  # noqa: E402
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+import secrets  # noqa: E402
+
+from fastapi.responses import HTMLResponse  # noqa: E402
+
+LINK_TTL = 72 * 3600
+
+
+def _link_secret():
+    f = KEYS / "link-secret"
+    if not f.exists():
+        KEYS.mkdir(parents=True, exist_ok=True)
+        f.write_text(secrets.token_hex(32))
+        os.chmod(f, 0o600)
+    return f.read_text().strip().encode()
+
+
+def approval_link(cid, case, name, role, decision):
+    payload = {"c": cid, "r": case["record_sha256"][:24], "n": name, "o": role, "e": int(time.time()) + LINK_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    sig = hmac.new(_link_secret(), raw.encode(), hashlib.sha256).hexdigest()[:40]
+    return f"{APP_URL}/approve/{raw}.{sig}?d={decision}"
+
+
+def _read_link(token):
+    try:
+        raw, sig = token.rsplit(".", 1)
+        good = hmac.new(_link_secret(), raw.encode(), hashlib.sha256).hexdigest()[:40]
+        if not hmac.compare_digest(sig, good):
+            raise ValueError
+        p = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+    except Exception:
+        raise HTTPException(403, "This approval link is not valid.")
+    if time.time() > p["e"]:
+        raise HTTPException(410, "This approval link has expired. Open the invoice in Countersign instead.")
+    cases = load_cases()
+    case = cases.get(p["c"])
+    if not case or not str(case.get("record_sha256", "")).startswith(p["r"]):
+        raise HTTPException(410, "This invoice has been read again since the email was sent, so the link no longer applies.")
+    return p, case
+
+
+def _html_page(title, inner, tone="#111"):
+    esc = __import__("html").escape
+    return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} · Countersign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500&display=swap" rel="stylesheet">
+<style>body{{margin:0;background:#FAF9F7;color:#111;font:15px/1.6 Poppins,system-ui,sans-serif}}
+.w{{max-width:560px;margin:0 auto;padding:40px 16px}}.b{{display:flex;align-items:center;gap:10px;margin-bottom:22px}}
+.m{{width:16px;height:16px;border:1.5px solid #111;border-radius:50%;position:relative}}.m:after{{content:"";position:absolute;inset:3.5px;border-radius:50%;background:#6487D7}}
+.c{{background:#fff;border:1px solid #E8E6E1;border-radius:16px;padding:28px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
+h1{{font-weight:300;font-size:26px;letter-spacing:-.5px;margin:0 0 8px;color:{tone}}}.amt{{font-weight:300;font-size:34px;letter-spacing:-1px;margin:6px 0 14px}}
+table{{width:100%;border-collapse:collapse;font-size:14px}}td{{padding:9px 0;border-top:1px solid #EEECE7;vertical-align:top}}td:first-child{{color:#8a8a8a;width:38%}}
+.btns{{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}}button,a.k{{font:500 14px Poppins,sans-serif;border-radius:999px;padding:11px 22px;cursor:pointer;text-decoration:none;border:1px solid}}
+.ok{{background:#1F6A4B;border-color:#1F6A4B;color:#fff}}.no{{background:#fff;border-color:#E3B8B2;color:#9A2A1F}}.gh{{background:#fff;border-color:#D9D6CF;color:#111}}
+.n{{font-size:13px;color:#6b6b6b;margin-top:14px}}</style></head><body><div class="w"><div class="b"><span class="m"></span>Countersign</div>
+<div class="c">{inner}</div></div></body></html>""")
+
+
+def _summary(case, p):
+    esc = __import__("html").escape
+    d = case.get("decided") or {}
+    so = case.get("signoff") or {}
+    rows = [("Supplier", d.get("vendor")), ("Invoice", d.get("invoice")), ("PO", d.get("po")),
+            ("Pays", f"{d.get('pay_to')} (PayPal account on file)"),
+            ("Checks", f"{sum(1 for c in case.get('checks', []) if c['passed'])} of {len(case.get('checks', []))} passed"),
+            ("Approving as", f"{p['n']} · {ROLES.get(p['o'], p['o'])}")]
+    if so.get("signed"):
+        rows.append(("Already approved by", ", ".join(f"{x['signer']} ({ROLES.get(x['role'], x['role'])})" for x in so["signed"])))
+    return (f'<div class="amt">{esc(usd(d.get("amount", 0)))}</div><table>' +
+            "".join(f"<tr><td>{esc(k)}</td><td>{esc(str(v))}</td></tr>" for k, v in rows) + "</table>")
+
+
+@app.get("/approve/{token}")
+def approve_page(token: str, d: str = "approve"):
+    try:
+        p, case = _read_link(token)
+    except HTTPException as e:
+        return _html_page("Link not valid", f"<h1>Can't use this link</h1><p>{e.detail}</p>"
+                          f'<div class="btns"><a class="k gh" href="{APP_URL}">Open Countersign</a></div>')
+    open_app = f'<a class="k gh" href="{APP_URL}/#case={p["c"]}">Open in Countersign</a>'
+    if case.get("status") != "PENDING" or p["o"] not in (case.get("signoff") or {}).get("waiting_for", []):
+        return _html_page("Already decided", f"<h1>Nothing left to approve here</h1><p>This invoice is "
+                          f"{STATUS_WORDS.get(case.get('status'), case.get('status'))}.</p>{_summary(case, p)}"
+                          f'<div class="btns">{open_app}</div>')
+    reject = d == "reject"
+    action = (f'<form method="post" action="/approve/{token}/reject"><button class="no">Reject this payment</button></form>'
+              if reject else
+              f'<form method="post" action="/approve/{token}/approve"><button class="ok">Approve payment</button></form>')
+    return _html_page("Approve payment", f"<h1>{'Reject' if reject else 'Approve'} this payment?</h1>"
+                      f"<p>{'Nothing will be paid.' if reject else 'When every required person has approved, Countersign sends it with PayPal Payouts.'}</p>"
+                      f'{_summary(case, p)}<div class="btns">{action}{open_app}</div>'
+                      f'<p class="n">Your decision is written to the signed ledger under your name.</p>')
+
+
+STATUS_WORDS = {"PAID": "paid", "BLOCK": "blocked", "REJECTED": "rejected", "APPROVED": "approved", "NEW": "not read yet"}
+
+
+@app.post("/approve/{token}/{decision}")
+def approve_from_email(token: str, decision: str):
+    try:
+        p, case = _read_link(token)
+        out = sign(p["c"], SignIn(name=p["n"], role=p["o"], approve=decision == "approve",
+                                  note=("approved for payment via PayPal Payouts (email link)" if decision == "approve"
+                                        else "rejected (email link)")))
+    except HTTPException as e:
+        now = load_cases().get(p["c"], {}) if "p" in locals() else {}
+        if now.get("status") == "APPROVED" and now.get("payout_error"):
+            return _html_page("Approved, not paid", f'<h1>Approved, but not paid yet</h1><p>Every approval is in. '
+                              f'PayPal refused the payout: {now["payout_error"]}</p><p>Fix that, then use "Try the '
+                              f'payout again" on the invoice. Nothing was sent.</p><div class="btns"><a class="k gh" '
+                              f'href="{APP_URL}/#case={p["c"]}">Open in Countersign</a></div>', tone="#8A5A12")
+        return _html_page("Not approved", f'<h1 style="color:#9A2A1F">Not done</h1><p>{e.detail}</p>'
+                          f'<div class="btns"><a class="k gh" href="{APP_URL}">Open Countersign</a></div>')
+    open_app = f'<a class="k gh" href="{APP_URL}/#case={p["c"]}">Open in Countersign</a>'
+    if out.get("status") == "PAID":
+        po = out.get("payout") or {}
+        head, sub = "Approved and paid", (f"PayPal batch {po.get('payout_batch_id')} · "
+                                          f"{po.get('item_status') or po.get('batch_status')}")
+    elif out.get("status") == "REJECTED":
+        head, sub = "Rejected", "Nothing will be paid."
+    else:
+        left = ", ".join(ROLES.get(r, r) for r in (out.get("signoff") or {}).get("waiting_for", []))
+        mailed = mailer.load()["email"]["auto_approval_requests"] and mailer.ready()[0]
+        head, sub = "Approved", f"Waiting for: {left}." + (" They have been emailed." if mailed else "")
+    return _html_page(head, f"<h1>{head}</h1><p>{sub}</p>{_summary(out, p)}<div class=\"btns\">{open_app}</div>",
+                      tone="#1F6A4B" if out.get("status") != "REJECTED" else "#9A2A1F")
 
 
 @app.exception_handler(HTTPException)
