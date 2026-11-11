@@ -9,3 +9,4 @@ __pycache__/
 # drafts for the Devpost form, kept local
 SUBMISSION.md
 VIDEO-SCRIPT.md
+.vercel

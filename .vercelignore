@@ -1,0 +1,11 @@
+.venv
+data
+__pycache__
+*.pyc
+.env
+.env.local
+.env.*.local
+SUBMISSION.md
+VIDEO-SCRIPT.md
+DEVPOST-STORY.md
+.DS_Store

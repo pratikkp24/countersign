@@ -27,6 +27,10 @@ Countersign lets an AI model do the reading and keeps the paying under rules and
 6. **Everything is evidence.** Each decision, each approval and the PayPal payout batch are Ed25519-signed,
    hash-chained records. The Ledger tab and `shio verify` check that nothing was edited, removed or reordered.
 
+## Live demo
+
+**https://aonami-countersign.vercel.app**: the real app on Vercel, with a real PayPal sandbox app, gpt-oss-120b on Groq, and Resend email (safe delivery: every email goes to the team's inbox). It is one shared demo: click **Vendors & POs > Reset demo** for a fresh inbox. Vercel keeps no files, so the demo also resets itself when the server restarts. The ledger is signed with a separate key for the hosted demo.
+
 ## The demo inbox
 
 | Invoice | What happens |

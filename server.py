@@ -97,7 +97,20 @@ lock = threading.RLock()
 
 # -- setup ------------------------------------------------------------------------------------------------------------
 
+def restore_secrets():
+    """Hosted runs (Vercel) have no lasting disk: the ledger key and the email-link secret come from env vars, so
+    signatures and emailed Approve links survive a cold start."""
+    for env, name in (("SHIO_SIGNING_KEY_PEM", "shio-signing.key"), ("SHIO_SIGNING_PUB_PEM", "shio-signing.pub"),
+                      ("COUNTERSIGN_LINK_SECRET", "link-secret")):
+        value = os.getenv(env)
+        if value and not (KEYS / name).exists():
+            KEYS.mkdir(parents=True, exist_ok=True)
+            (KEYS / name).write_text(value.replace("\\n", "\n"))
+            os.chmod(KEYS / name, 0o600)
+
+
 def ensure_keys():
+    restore_secrets()
     if not os.getenv("SHIO_SIGNING_KEY"):
         key = KEYS / "shio-signing.key"
         if not key.exists():
