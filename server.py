@@ -430,6 +430,7 @@ def reconcile():
     """Match every payout Countersign made against the business's own PayPal transaction history (Transaction
     Search), and list money that left the PayPal account without a Countersign approval."""
     import datetime as dt
+    import html
     if not PayPal.configured():
         return {"ok": False, "error": "PayPal sandbox credentials are not set"}
     end = dt.datetime.now(dt.timezone.utc)
@@ -474,14 +475,15 @@ def reconcile():
     for t in txs:
         i = t.get("transaction_info", {})
         amt = float(i.get("transaction_amount", {}).get("value", 0) or 0)
-        if amt >= 0 or i.get("transaction_id") in used:
+        # only real payments out (T00xx); payouts also create a balance hold (T1503) and its release (T1105)
+        if amt >= 0 or i.get("transaction_id") in used or not str(i.get("transaction_event_code", "")).startswith("T00"):
             continue
         payer = t.get("payer_info") or {}
         outside.append({"transaction_id": i.get("transaction_id"), "amount": abs(amt),
                         "fee": abs(float(i.get("fee_amount", {}).get("value", 0) or 0)),
                         "currency": i.get("transaction_amount", {}).get("currency_code"),
                         "event": i.get("transaction_event_code"), "status": i.get("transaction_status"),
-                        "time": i.get("transaction_initiation_date"), "note": i.get("transaction_note") or i.get("transaction_subject"),
+                        "time": i.get("transaction_initiation_date"), "note": html.unescape(i.get("transaction_note") or i.get("transaction_subject") or ""),
                         "counterparty": payer.get("email_address")})
     outside.sort(key=lambda r: r["time"] or "", reverse=True)
     return {"ok": True, "refreshed": refreshed, "window_days": 30, "paypal_count": len(txs), "ours": ours,

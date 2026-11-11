@@ -459,7 +459,7 @@ async function loadReconcile() {
     ? R.outside.map((r) => `<tr><td>${when(Date.parse(r.time) / 1000)}</td><td class="r num">${usd(r.amount)}</td><td class="r num">${r.fee ? usd(r.fee) : "–"}</td><td>${esc(r.counterparty || "")}<div class="muted small">${esc(r.note || "")}</div></td><td class="mono hash">${esc(r.transaction_id)}</td></tr>`).join("")
     : `<tr><td colspan="5" class="muted">None. Every payment out of the account was approved in Countersign.</td></tr>`;
   el.innerHTML = `<div class="banner"><span class="${clean ? "tick" : "cross"}" style="width:26px;height:26px;font-size:14px">${clean ? "✓" : "!"}</span>
-      <div><div class="big">${n("MATCHED")} of ${R.ours.length} payouts matched in PayPal</div>
+      <div><div class="big">${R.ours.length ? `${n("MATCHED")} of ${R.ours.length} ${R.ours.length === 1 ? "payout" : "payouts"} matched in PayPal` : "No payouts in this workspace yet"}</div>
       <div class="muted small">${n("WAITING") ? `${n("WAITING")} not in PayPal's report yet (it can trail payouts by up to a few hours) · ` : ""}${R.outside.length} ${R.outside.length === 1 ? "payment" : "payments"} out without a Countersign approval · ${R.paypal_count} PayPal transactions read, last ${R.window_days} days · PayPal report refreshed ${esc(refreshed)}</div></div></div>
     <div class="section"><h3>Countersign payouts, checked against PayPal</h3>
       <table class="tbl"><thead><tr><th>PayPal says</th><th>Invoice</th><th class="r">Approved</th><th class="r">In PayPal</th><th class="r">Fee</th><th>Transaction</th></tr></thead><tbody>${ours}</tbody></table></div>

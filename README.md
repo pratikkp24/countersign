@@ -115,11 +115,11 @@ Open http://localhost:8090, press **Read all**, open an invoice and approve it.
 - **Payouts API** (sandbox): `POST /v1/payments/payouts` with a `sender_batch_id` bound to the approved decision,
   `GET /v1/payments/payouts/{payout_batch_id}` for the batch and item status, transaction id and fee.
 - **OAuth 2.0 client credentials** against `api-m.sandbox.paypal.com`.
-- **Transaction Search** (`GET /v1/reporting/transactions`), in progress: the **Reconcile** tab matches every
-  Countersign payout against the studio's own PayPal transaction history (last 30 days) and lists money that left
-  the account without an approval. It needs **Transaction search** ticked under the app's Features on
-  developer.paypal.com; until PayPal grants that to the app, the tab says so. PayPal's report can trail payouts by a
-  few hours.
+- **Transaction Search** (`GET /v1/reporting/transactions`): the **Reconcile** tab matches every Countersign payout
+  against the studio's own PayPal transaction history (last 30 days) by transaction ID, amount and fee, and lists
+  payments out of the account that were not approved in Countersign (balance holds and releases are ignored). Tick
+  **Transaction search** under the app's Features on developer.paypal.com. PayPal's report can trail a payout by a
+  few hours; until then the payout shows as "not in PayPal's report yet"
 
 ## What it does not do yet
 
