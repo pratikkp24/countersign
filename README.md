@@ -125,4 +125,4 @@ Open http://localhost:8090, press **Read all**, open an invoice and approve it.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE). Shio is MIT or Apache-2.0. Built by Aonami Inc.
+MIT, see [LICENSE](LICENSE). Shio is MIT or Apache-2.0. Built by Aonami Technologies Pvt Ltd (India).
